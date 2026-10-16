@@ -1,0 +1,30 @@
+# golangci-lint v2: набор линтеров поверх стандартного (govet, errcheck, staticcheck, unused, ineffassign).
+version: "2"
+
+linters:
+  default: standard
+  enable:
+    - bodyclose     # не забыт resp.Body.Close()
+    - errorlint     # ошибки сравниваются через errors.Is/As, а не ==
+    - gocritic
+    - misspell
+    - noctx         # HTTP-запросы и т.п. только с context
+    - revive        # стиль: комментарии к экспортируемым именам и пр.
+    - sloglint      # единообразные пары ключ-значение в slog
+    - unconvert
+    - unparam
+    - usestdlibvars
+  settings:
+    sloglint:
+      kv-only: true
+      context: scope  # если в функции есть ctx — пишем через *Context-методы
+  exclusions:
+    presets: [std-error-handling]
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes: [ytcomments]

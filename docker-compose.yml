@@ -1,0 +1,31 @@
+services:
+  redis:
+    image: redis:8-alpine
+    # Порт наружу не публикуем: api и worker ходят в Redis по внутренней сети compose.
+    # Заглянуть внутрь: docker compose exec redis redis-cli
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+
+  # api и worker — один образ с двумя бинарниками, отличается только точка входа
+  api:
+    build: .
+    image: ytcomments-go:latest
+    env_file: .env
+    environment:
+      REDIS_URL: redis://redis:6379/0
+    ports: ["8000:8000"]
+    depends_on:
+      redis: { condition: service_healthy }
+
+  worker:
+    build: .   # тот же контекст и тег: образ собирается из кэша, без отдельного pull
+    image: ytcomments-go:latest
+    entrypoint: ["/app/worker"]
+    env_file: .env
+    environment:
+      REDIS_URL: redis://redis:6379/0
+    # Воркер ждёт текущие задачи до 25 с (shutdownTimeout), даём запас до SIGKILL
+    stop_grace_period: 30s
+    depends_on:
+      redis: { condition: service_healthy }
