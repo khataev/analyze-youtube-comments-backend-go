@@ -6,11 +6,10 @@ import (
 	"github.com/google/go-cmp/cmp"
 
 	"ytcomments/internal/analysis"
-	"ytcomments/internal/youtube"
 )
 
 func TestGroupByCategory(t *testing.T) {
-	comments := []youtube.Comment{
+	comments := []analysis.Comment{
 		{ID: "1", Text: "Thanks a lot!"},
 		{ID: "2", Text: "How did you do that?"},
 		{ID: "3", Text: "Great video, thank you"},

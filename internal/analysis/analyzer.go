@@ -10,17 +10,16 @@ import (
 	"github.com/google/uuid"
 
 	"ytcomments/internal/logging"
-	"ytcomments/internal/youtube"
 )
 
 // CommentSource загружает комментарии к видео.
 type CommentSource interface {
-	FetchComments(ctx context.Context, videoID string) ([]youtube.Comment, error)
+	FetchComments(ctx context.Context, videoID string) ([]Comment, error)
 }
 
 // Classifier относит каждый комментарий к одной из Categories.
 type Classifier interface {
-	Classify(ctx context.Context, comments []youtube.Comment) ([]Classification, error)
+	Classify(ctx context.Context, comments []Comment) ([]Classification, error)
 }
 
 // ErrPermanent оборачивает ошибки, после которых повтор бессмыслен
@@ -110,11 +109,11 @@ func (a *Analyzer) process(ctx context.Context, videoID string) (Result, error) 
 }
 
 func (a *Analyzer) handleFailure(ctx context.Context, task *Task, err error, lastAttempt bool) error {
-	var ytErr *youtube.Error
+	var sourceErr *CommentSourceError
 	switch {
-	case errors.As(err, &ytErr):
-		a.logger.WarnContext(ctx, "task failed: YouTube error", "error", ytErr.Message)
-		a.markFailed(ctx, task, ytErr.Message)
+	case errors.As(err, &sourceErr):
+		a.logger.WarnContext(ctx, "task failed: comment source error", "error", err)
+		a.markFailed(ctx, task, sourceErr.Message)
 		return fmt.Errorf("%w: %w", ErrPermanent, err)
 
 	case errors.Is(err, context.Canceled):

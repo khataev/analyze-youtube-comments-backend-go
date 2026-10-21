@@ -22,7 +22,6 @@ import (
 	"ytcomments/internal/analysis/analysistest"
 	"ytcomments/internal/httpapi"
 	"ytcomments/internal/logging"
-	"ytcomments/internal/youtube"
 )
 
 // readTimeout намеренно маленький: воркер простаивает дольше него (см. ниже).
@@ -123,7 +122,7 @@ func (p *pipeline) waitFinal(t *testing.T, taskID string) statusBody {
 }
 
 func TestPipelineCompletes(t *testing.T) {
-	p := startPipeline(t, &analysistest.Source{Comments: []youtube.Comment{
+	p := startPipeline(t, &analysistest.Source{Comments: []analysis.Comment{
 		{ID: "a", Text: "Thank you!"}, {ID: "b", Text: "Thanks"},
 	}})
 
@@ -140,13 +139,14 @@ func TestPipelineCompletes(t *testing.T) {
 	}
 }
 
-func TestPipelineYouTubeErrorFailsTask(t *testing.T) {
-	p := startPipeline(t, &analysistest.Source{Err: youtube.ErrCommentsUnavailable})
+func TestPipelineSourceErrorFailsTask(t *testing.T) {
+	const message = "Comments are disabled for this video or API quota is exceeded"
+	p := startPipeline(t, &analysistest.Source{Err: &analysis.CommentSourceError{Message: message}})
 
 	got := p.waitFinal(t, p.start(t, "https://youtu.be/dQw4w9WgXcQ"))
 
-	if got.Status != "failed" || got.Error == nil || *got.Error != youtube.ErrCommentsUnavailable.Message {
-		t.Errorf("got %+v, want failed with %q", got, youtube.ErrCommentsUnavailable.Message)
+	if got.Status != "failed" || got.Error == nil || *got.Error != message {
+		t.Errorf("got %+v, want failed with %q", got, message)
 	}
 }
 
@@ -155,7 +155,7 @@ func TestPipelineYouTubeErrorFailsTask(t *testing.T) {
 // asynq не использует блокирующих команд (опрашивает очередь), поэтому воркер,
 // простоявший без задач во много раз дольше ReadTimeout, всё ещё работает.
 func TestWorkerSurvivesIdleLongerThanReadTimeout(t *testing.T) {
-	p := startPipeline(t, &analysistest.Source{Comments: []youtube.Comment{{ID: "a", Text: "hi"}}})
+	p := startPipeline(t, &analysistest.Source{Comments: []analysis.Comment{{ID: "a", Text: "hi"}}})
 
 	time.Sleep(5 * readTimeout) // воркер простаивает на пустой очереди
 

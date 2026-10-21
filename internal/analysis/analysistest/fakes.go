@@ -13,7 +13,6 @@ import (
 	"github.com/google/uuid"
 
 	"ytcomments/internal/analysis"
-	"ytcomments/internal/youtube"
 )
 
 // Store — TaskStore в памяти. Запоминает историю статусов каждой задачи.
@@ -89,12 +88,12 @@ func (q *Queue) Enqueued() []uuid.UUID {
 
 // Source — CommentSource с заранее заданным ответом.
 type Source struct {
-	Comments []youtube.Comment
+	Comments []analysis.Comment
 	Err      error
 }
 
 // FetchComments реализует analysis.CommentSource.
-func (s *Source) FetchComments(context.Context, string) ([]youtube.Comment, error) {
+func (s *Source) FetchComments(context.Context, string) ([]analysis.Comment, error) {
 	return s.Comments, s.Err
 }
 
@@ -108,7 +107,7 @@ type Classifier struct {
 }
 
 // Classify реализует analysis.Classifier.
-func (c *Classifier) Classify(_ context.Context, comments []youtube.Comment) ([]analysis.Classification, error) {
+func (c *Classifier) Classify(_ context.Context, comments []analysis.Comment) ([]analysis.Classification, error) {
 	c.mu.Lock()
 	c.calls++
 	c.mu.Unlock()

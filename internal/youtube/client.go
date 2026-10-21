@@ -1,6 +1,9 @@
 // Package youtube — тонкий клиент YouTube Data API v3 (только то, что нужно сервису).
 //
-// Пакет ничего не знает о домене анализа: он возвращает комментарии и ошибки YouTube.
+// Клиент — реализация analysis.CommentSource: возвращает доменный analysis.Comment и
+// оборачивает свои постоянные ошибки в analysis.CommentSourceError. Зависимость
+// направлена от клиента к домену, а не наоборот: домен объявляет, что ему нужно,
+// а клиент под это подстраивается (dependency inversion).
 package youtube
 
 import (
@@ -13,6 +16,8 @@ import (
 	"net/url"
 	"strconv"
 	"time"
+
+	"ytcomments/internal/analysis"
 )
 
 const (
@@ -24,14 +29,9 @@ const (
 	maxBackoff     = 5 * time.Second
 )
 
-// Comment — комментарий верхнего уровня.
-type Comment struct {
-	ID   string `json:"id"`
-	Text string `json:"text"`
-}
-
 // Error — ошибка YouTube, сообщение которой можно показать пользователю.
-// Это постоянные ошибки: повтор запроса не поможет.
+// Это постоянные ошибки: повтор запроса не поможет. Наружу она выходит обёрнутой
+// в analysis.CommentSourceError (см. sourceError), а errors.Is/As находят её по цепочке.
 type Error struct {
 	StatusCode int
 	Message    string
@@ -91,8 +91,8 @@ func NewClient(httpClient *http.Client, apiKey string, maxComments int, opts ...
 }
 
 // FetchComments загружает комментарии постранично, но не больше maxComments.
-func (c *Client) FetchComments(ctx context.Context, videoID string) ([]Comment, error) {
-	comments := make([]Comment, 0, min(c.maxComments, pageSize))
+func (c *Client) FetchComments(ctx context.Context, videoID string) ([]analysis.Comment, error) {
+	comments := make([]analysis.Comment, 0, min(c.maxComments, pageSize))
 	pageToken := ""
 	for len(comments) < c.maxComments {
 		page, err := c.fetchPageWithRetry(ctx, videoID, pageToken)
@@ -101,7 +101,7 @@ func (c *Client) FetchComments(ctx context.Context, videoID string) ([]Comment, 
 		}
 		for _, item := range page.Items {
 			top := item.Snippet.TopLevelComment
-			comments = append(comments, Comment{ID: top.ID, Text: top.Snippet.TextOriginal})
+			comments = append(comments, analysis.Comment{ID: top.ID, Text: top.Snippet.TextOriginal})
 		}
 		if page.NextPageToken == "" {
 			break
@@ -195,16 +195,21 @@ func checkStatus(code int) error {
 	case code < 300:
 		return nil
 	case code == http.StatusNotFound:
-		return ErrVideoNotFound
+		return sourceError(ErrVideoNotFound)
 	case code == http.StatusForbidden:
-		return ErrCommentsUnavailable
+		return sourceError(ErrCommentsUnavailable)
 	case code == http.StatusTooManyRequests || code >= 500:
 		return &retryableError{fmt.Errorf("youtube: unexpected status %d", code)}
 	case code >= 400:
-		return &Error{StatusCode: code, Message: fmt.Sprintf("YouTube API rejected the request (%d)", code)}
+		return sourceError(&Error{StatusCode: code, Message: fmt.Sprintf("YouTube API rejected the request (%d)", code)})
 	default:
 		return fmt.Errorf("youtube: unexpected status %d", code)
 	}
+}
+
+// sourceError переводит ошибку YouTube в доменную: сообщение для пользователя — то же.
+func sourceError(err *Error) error {
+	return &analysis.CommentSourceError{Message: err.Message, Err: err}
 }
 
 // sleepContext — пауза, которую можно прервать отменой context

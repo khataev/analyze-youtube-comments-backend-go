@@ -14,7 +14,6 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"ytcomments/internal/llm"
-	"ytcomments/internal/youtube"
 )
 
 const (
@@ -63,7 +62,7 @@ func NewLLMClassifier(caller ToolCaller, batchSize int, logger *slog.Logger) *LL
 // errgroup — аналог asyncio.gather с семафором: g.Go запускает функцию в горутине
 // (SetLimit ограничивает их число), g.Wait ждёт все и возвращает первую ошибку.
 // При первой ошибке ctx отменяется, и остальные запросы прерываются.
-func (c *LLMClassifier) Classify(ctx context.Context, comments []youtube.Comment) ([]Classification, error) {
+func (c *LLMClassifier) Classify(ctx context.Context, comments []Comment) ([]Classification, error) {
 	batches := slices.Collect(slices.Chunk(comments, c.batchSize))
 	c.logger.InfoContext(ctx, "llm: classifying",
 		"comments", len(comments), "batches", len(batches), "batch_size", c.batchSize,
@@ -88,7 +87,7 @@ func (c *LLMClassifier) Classify(ctx context.Context, comments []youtube.Comment
 	return slices.Concat(results...), nil
 }
 
-func (c *LLMClassifier) classifyBatch(ctx context.Context, number, total int, batch []youtube.Comment) ([]Classification, error) {
+func (c *LLMClassifier) classifyBatch(ctx context.Context, number, total int, batch []Comment) ([]Classification, error) {
 	payload, err := marshalComments(batch)
 	if err != nil {
 		return nil, err
@@ -124,13 +123,24 @@ func (c *LLMClassifier) classifyBatch(ctx context.Context, number, total int, ba
 	}
 }
 
+// promptComment — форма комментария в сообщении для модели. Отдельный тип, а не теги
+// на доменном Comment: формат промпта — забота классификатора.
+type promptComment struct {
+	ID   string `json:"id"`
+	Text string `json:"text"`
+}
+
 // marshalComments — комментарии передаются как JSON, а не вклеиваются в текст промпта:
 // кавычки и переводы строк экранируются, и текст не может «сломать» структуру сообщения.
-func marshalComments(batch []youtube.Comment) (string, error) {
+func marshalComments(batch []Comment) (string, error) {
+	items := make([]promptComment, len(batch))
+	for i, c := range batch {
+		items[i] = promptComment(c) // одинаковый набор полей — допустимо прямое преобразование
+	}
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf)
 	enc.SetEscapeHTML(false) // не превращать <, >, & в < — так читабельнее для модели
-	if err := enc.Encode(batch); err != nil {
+	if err := enc.Encode(items); err != nil {
 		return "", fmt.Errorf("marshal comments: %w", err)
 	}
 	return strings.TrimSpace(buf.String()), nil

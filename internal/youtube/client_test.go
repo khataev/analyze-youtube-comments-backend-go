@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"ytcomments/internal/analysis"
 	"ytcomments/internal/youtube"
 )
 
@@ -80,7 +81,7 @@ func TestFetchCommentsPaginatesUpToLimit(t *testing.T) {
 	if calls.Load() != 3 {
 		t.Errorf("requests = %d, want 3", calls.Load())
 	}
-	if comments[0] != (youtube.Comment{ID: "0", Text: "text 0"}) {
+	if comments[0] != (analysis.Comment{ID: "0", Text: "text 0"}) {
 		t.Errorf("first comment = %+v", comments[0])
 	}
 }
@@ -151,9 +152,15 @@ func TestFetchCommentsPermanentErrors(t *testing.T) {
 
 			_, err := client.FetchComments(t.Context(), "vid")
 
+			// Наружу — доменная ошибка с сообщением для пользователя…
+			var sourceErr *analysis.CommentSourceError
+			if !errors.As(err, &sourceErr) || sourceErr.Message != tt.wantMessage {
+				t.Fatalf("error = %v, want *analysis.CommentSourceError %q", err, tt.wantMessage)
+			}
+			// …а подробности YouTube доступны по цепочке.
 			var ytErr *youtube.Error
-			if !errors.As(err, &ytErr) || ytErr.Message != tt.wantMessage {
-				t.Fatalf("error = %v, want *youtube.Error %q", err, tt.wantMessage)
+			if !errors.As(err, &ytErr) || ytErr.StatusCode != tt.status {
+				t.Errorf("errors.As(*youtube.Error) = %v, want status %d", ytErr, tt.status)
 			}
 			if tt.wantIs != nil && !errors.Is(err, tt.wantIs) {
 				t.Errorf("errors.Is(%v, %v) = false", err, tt.wantIs)

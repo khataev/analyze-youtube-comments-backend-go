@@ -56,14 +56,15 @@ var Categories = []Category{
 // Valid — значение входит в список категорий.
 func (c Category) Valid() bool { return slices.Contains(Categories, c) }
 
-// CommentOut — комментарий в результате анализа.
-type CommentOut struct {
+// Comment — комментарий к видео. Доменный тип: источник комментариев (клиент YouTube)
+// возвращает именно его, поэтому домен не зависит от клиента, а клиент — от домена.
+type Comment struct {
 	ID   string `json:"id"`
 	Text string `json:"text"`
 }
 
 // Result — комментарии, сгруппированные по категориям. Пустые категории отсутствуют.
-type Result map[Category][]CommentOut
+type Result map[Category][]Comment
 
 // Classification — ответ классификатора для одного комментария.
 type Classification struct {
@@ -90,6 +91,27 @@ var (
 	ErrInvalidTaskID      = apperr.New(apperr.KindInvalid, "Invalid task_id: must be a UUID")
 	ErrStorageUnavailable = apperr.New(apperr.KindUnavailable, "Storage is unavailable")
 )
+
+// CommentSourceError — источник не смог отдать комментарии, и повтор не поможет
+// (видео нет, комментарии отключены). Message попадает в статус задачи как есть,
+// поэтому должен быть понятен пользователю. Err — исходная ошибка источника.
+//
+// Тип объявлен в домене, а реализации источника оборачивают в него свои ошибки:
+// анализатор проверяет errors.As(err, &*CommentSourceError) и ничего не знает о YouTube.
+type CommentSourceError struct {
+	Message string
+	Err     error
+}
+
+func (e *CommentSourceError) Error() string {
+	if e.Err != nil {
+		return e.Message + ": " + e.Err.Error()
+	}
+	return e.Message
+}
+
+// Unwrap позволяет errors.Is/As дойти до исходной ошибки (например, *youtube.Error).
+func (e *CommentSourceError) Unwrap() error { return e.Err }
 
 // Сообщения для пользователя у упавших задач.
 const (

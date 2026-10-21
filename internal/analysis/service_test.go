@@ -13,7 +13,6 @@ import (
 	"ytcomments/internal/analysis"
 	"ytcomments/internal/analysis/analysistest"
 	"ytcomments/internal/logging"
-	"ytcomments/internal/youtube"
 )
 
 func TestServiceStart(t *testing.T) {
@@ -86,7 +85,7 @@ func saveTask(t *testing.T, store *analysistest.Store, status analysis.Status, u
 }
 
 func TestAnalyzerRun(t *testing.T) {
-	comments := []youtube.Comment{{ID: "c1", Text: "thanks!"}, {ID: "c2", Text: "thank you"}}
+	comments := []analysis.Comment{{ID: "c1", Text: "thanks!"}, {ID: "c2", Text: "thank you"}}
 	transient := errors.New("connection reset")
 
 	tests := []struct {
@@ -117,8 +116,9 @@ func TestAnalyzerRun(t *testing.T) {
 			wantResult:  analysis.Result{},
 		},
 		{
-			name:        "youtube error fails immediately without retry",
-			source:      &analysistest.Source{Err: fmt.Errorf("wrapped: %w", youtube.ErrVideoNotFound)},
+			name: "comment source error fails immediately without retry",
+			source: &analysistest.Source{Err: fmt.Errorf("wrapped: %w",
+				&analysis.CommentSourceError{Message: "Video not found", Err: errors.New("http 404")})},
 			classifier:  &analysistest.Classifier{},
 			wantErr:     analysis.ErrPermanent,
 			wantHistory: []analysis.Status{analysis.StatusPending, analysis.StatusProcessing, analysis.StatusFailed},
@@ -189,7 +189,7 @@ func TestAnalyzerRun(t *testing.T) {
 func TestAnalyzerSkipsMissingAndFinishedTasks(t *testing.T) {
 	store := analysistest.NewStore()
 	classifier := &analysistest.Classifier{}
-	source := &analysistest.Source{Comments: []youtube.Comment{{ID: "1", Text: "hi"}}}
+	source := &analysistest.Source{Comments: []analysis.Comment{{ID: "1", Text: "hi"}}}
 	analyzer := analysis.NewAnalyzer(store, source, classifier, logging.Discard())
 
 	if err := analyzer.Run(t.Context(), uuid.New(), false); err != nil {
