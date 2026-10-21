@@ -1,31 +1,40 @@
-services:
-  redis:
-    image: redis:8-alpine
-    # Порт наружу не публикуем: api и worker ходят в Redis по внутренней сети compose.
-    # Заглянуть внутрь: docker compose exec redis redis-cli
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
+# Redis и Postgres общие для всех backend-* и запускаются отдельно:
+#   docker compose -f ../docker-compose.yml up -d
+# Здесь только сервисы этого backend: migrate, api и worker.
 
-  # api и worker — один образ с двумя бинарниками, отличается только точка входа
+# Общая часть сервисов (YAML-якорь): один образ с тремя бинарниками, отличается точка входа.
+x-app: &app
+  build: .
+  image: ytcomments-go:latest # один тег: образ собирается один раз, остальные берут его из кэша
+  env_file: .env
+  environment:
+    # Внутри сети ayc-infra сервисы доступны по именам, а не через localhost
+    REDIS_URL: redis://redis:6379/1
+    DATABASE_URL: postgres://app:app@postgres:5432/analysis_go?sslmode=disable
+  networks: [infra]
+
+services:
+  # Одноразовый: создать базу, если её нет, и применить миграции (rails db:prepare).
+  # Нужен только DATABASE_URL, ключи YouTube и LLM migrate не читает.
+  migrate:
+    <<: *app
+    entrypoint: ["/app/migrate", "prepare"]
+
   api:
-    build: .
-    image: ytcomments-go:latest
-    env_file: .env
-    environment:
-      REDIS_URL: redis://redis:6379/0
+    <<: *app
     ports: ["8000:8000"]
     depends_on:
-      redis: { condition: service_healthy }
+      migrate: { condition: service_completed_successfully }
 
   worker:
-    build: .   # тот же контекст и тег: образ собирается из кэша, без отдельного pull
-    image: ytcomments-go:latest
+    <<: *app
     entrypoint: ["/app/worker"]
-    env_file: .env
-    environment:
-      REDIS_URL: redis://redis:6379/0
     # Воркер ждёт текущие задачи до 25 с (shutdownTimeout), даём запас до SIGKILL
     stop_grace_period: 30s
     depends_on:
-      redis: { condition: service_healthy }
+      migrate: { condition: service_completed_successfully }
+
+networks:
+  infra:
+    external: true # сеть создаёт ../docker-compose.yml, здесь к ней только подключаемся
+    name: ayc-infra

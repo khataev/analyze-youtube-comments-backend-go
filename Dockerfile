@@ -14,8 +14,9 @@ COPY . .
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/ ./cmd/...
 
 # --- Итоговый образ: только бинарники, CA-сертификаты и пользователь nonroot ---
+# Миграции вшиты в /app/migrate (go:embed), отдельные SQL-файлы и CLI не нужны.
 FROM gcr.io/distroless/static-debian12:nonroot
-COPY --from=build /out/api /out/worker /app/
+COPY --from=build /out/api /out/worker /out/migrate /app/
 USER nonroot:nonroot
 EXPOSE 8000
 ENTRYPOINT ["/app/api"]

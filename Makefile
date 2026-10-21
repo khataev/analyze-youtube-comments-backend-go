@@ -54,8 +54,9 @@ tidy: ## Привести go.mod/go.sum в порядок
 generate: ## Перегенерировать код запросов к БД (sqlc)
 	go -C tools tool sqlc generate -f ../sqlc.yaml
 
-docker-up: ## Поднять redis + api + worker в Docker
+docker-up: ## Поднять общую инфраструктуру, затем migrate + api + worker в Docker
+	docker compose -f ../docker-compose.yml up -d --wait
 	docker compose up --build
 
-docker-down: ## Остановить Docker-окружение
+docker-down: ## Остановить сервисы этого backend (общая инфраструктура остаётся)
 	docker compose down
