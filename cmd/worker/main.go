@@ -19,12 +19,12 @@ import (
 	"github.com/hibiken/asynq"
 	"github.com/redis/go-redis/v9"
 
-	"ytcomments/internal/analysis"
-	"ytcomments/internal/config"
-	"ytcomments/internal/llm"
-	"ytcomments/internal/logging"
-	"ytcomments/internal/postgres"
-	"ytcomments/internal/youtube"
+	"ytcomments/internal/core/config"
+	"ytcomments/internal/core/logging"
+	"ytcomments/internal/core/postgres"
+	"ytcomments/internal/modules/analysis"
+	"ytcomments/internal/modules/llm"
+	"ytcomments/internal/modules/youtube"
 )
 
 const (

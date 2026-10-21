@@ -20,35 +20,62 @@ backend-go/
 │   ├── worker/main.go         # воркер очереди (composition root воркера)
 │   └── migrate/main.go        # создание базы и миграции: prepare, create, up, down, status
 ├── internal/                  # весь прикладной код; импортировать его снаружи модуля нельзя
-│   ├── analysis/              # домен «анализ комментариев»: всё, что к нему относится
-│   │   ├── model.go           #   Task, Comment, Status, Category, доменные ошибки, CommentSourceError
-│   │   ├── videourl.go        #   ParseVideoID: watch?v=, youtu.be, /shorts, /embed, /live
-│   │   ├── service.go         #   Service — сторона API (Start, Get) + интерфейсы TaskStore, TaskQueue
-│   │   ├── analyzer.go        #   Analyzer — сторона воркера + интерфейсы CommentSource, Classifier
-│   │   ├── classifier.go      #   LLMClassifier: промпт, JSON-схема, батчи, ограниченный параллелизм
-│   │   ├── grouping.go        #   GroupByCategory: отбрасывает выдуманные и повторяющиеся id
-│   │   ├── repository.go      #   PostgresRepository: Task <-> analysisdb.AnalysisTask
-│   │   ├── analysisdb/        #   SQL-запросы (queries.sql) и сгенерированный sqlc код к ним
-│   │   ├── queue.go           #   asynq: постановка задачи (API) и её обработчик (воркер)
-│   │   ├── handler.go         #   HTTP-хендлер домена и схемы API (analyzeRequest, taskStatusResponse, ...)
-│   │   └── analysistest/      #   фейки интерфейсов для тестов (как net/http/httptest)
-│   ├── postgres/              # пул pgx, создание базы, миграции goose, классификация ошибок
-│   │   ├── migrations/        #   SQL-миграции, вшиваются в бинарник (go:embed)
-│   │   └── pgtest/            #   тестовая база: подготовка в TestMain, транзакция с откатом
-│   ├── youtube/               # клиент YouTube Data API: пагинация, ретраи, ошибки 404/403/400
-│   ├── llm/                   # провайдер-агностичный вызов LLM + OpenAI-совместимая реализация
-│   ├── httpapi/               # сборка HTTP-приложения: маршруты, /health, middleware
-│   ├── httpx/                 # JSON-ответы, единый маппинг ошибок в HTTP-коды, middleware
-│   ├── apperr/                # прикладные ошибки с «видом» (NotFound, Invalid, Unavailable)
-│   ├── config/                # чтение и валидация конфигурации, поиск .env, Secret
-│   └── logging/               # slog + поля лога через context, адаптер логгера для asynq
+│   ├── core/                  # инфраструктура без бизнес-смысла; о modules не знает
+│   │   ├── config/            #   чтение и валидация конфигурации, поиск .env, Secret
+│   │   ├── logging/           #   slog + поля лога через context, адаптер логгера для asynq
+│   │   ├── postgres/          #   пул pgx, создание базы, применение миграций, классификация ошибок
+│   │   │   └── pgtest/        #     тестовая база: подготовка в TestMain, транзакция с откатом
+│   │   ├── health/            #   /health: параллельная проверка зависимостей
+│   │   ├── httpx/             #   JSON-ответы, единый маппинг ошибок в HTTP-коды, middleware
+│   │   └── apperr/            #   прикладные ошибки с «видом» (NotFound, Invalid, Unavailable)
+│   ├── modules/               # бизнес-модули
+│   │   ├── analysis/          #   домен «анализ комментариев»: всё, что к нему относится
+│   │   │   ├── model.go       #     Task, Comment, Status, Category, доменные ошибки, CommentSourceError
+│   │   │   ├── videourl.go    #     ParseVideoID: watch?v=, youtu.be, /shorts, /embed, /live
+│   │   │   ├── service.go     #     Service — сторона API (Start, Get) + интерфейсы TaskStore, TaskQueue
+│   │   │   ├── analyzer.go    #     Analyzer — сторона воркера + интерфейсы CommentSource, Classifier
+│   │   │   ├── classifier.go  #     LLMClassifier: промпт, JSON-схема, батчи, ограниченный параллелизм
+│   │   │   ├── grouping.go    #     GroupByCategory: отбрасывает выдуманные и повторяющиеся id
+│   │   │   ├── repository.go  #     PostgresRepository: Task <-> analysisdb.AnalysisTask
+│   │   │   ├── analysisdb/    #     SQL-запросы (queries.sql) и сгенерированный sqlc код к ним
+│   │   │   ├── queue.go       #     asynq: постановка задачи (API) и её обработчик (воркер)
+│   │   │   ├── handler.go     #     HTTP-хендлер и схемы API (analyzeRequest, taskStatusResponse, ...)
+│   │   │   └── analysistest/  #     фейки интерфейсов для тестов (как net/http/httptest)
+│   │   ├── youtube/           #   клиент YouTube Data API: пагинация, ретраи, ошибки 404/403/400
+│   │   └── llm/               #   провайдер-агностичный вызов LLM + OpenAI-совместимая реализация
+│   └── httpapi/               # сборка HTTP-приложения из modules и core (как api.module.ts в Node)
+├── migrations/                # SQL-миграции goose (db/migrate в Rails), вшиваются в бинарник
 ├── test/e2e/                  # сквозной тест «API → очередь → воркер»
 ├── tools/go.mod               # инструменты разработки (sqlc) со своими зависимостями
 ├── sqlc.yaml                  # настройки генерации кода запросов
 ├── Makefile  Dockerfile  docker-compose.yml  .golangci.yml  .env.example
 ```
 
-### Направление зависимостей
+### core и modules
+
+Как в Node-версии (`src/core` и `src/modules`), инфраструктура отделена от бизнес-модулей:
+
+```
+cmd/*  ──►  internal/httpapi  ──►  internal/modules/*  ──►  internal/core/*
+  └──────────────────────────────────────┴──► migrations/
+```
+
+- **`core/`** — то, что нужно любому сервису и не несёт бизнес-смысла: конфигурация, логи, Postgres, `/health`, HTTP-утилиты, виды ошибок. Его можно было бы перенести в другой проект без изменений.
+- **`modules/`** — бизнес: `analysis` и клиенты внешних сервисов, которые ему нужны (`youtube`, `llm`).
+- **`httpapi`** — единственный пакет `internal/`, который знает и о core, и о modules: собирает из них HTTP-приложение. Аналог `api.module.ts` в корне `src/` Node-версии.
+- **`migrations/`** — в корне проекта, как `drizzle/` в Node и `migrations/` в Python: таблицы принадлежат модулям, а `core/postgres` умеет применять любые миграции и получает их параметром (`postgres.NewMigrator(url, migrations.FS, logger)`).
+- Отдельного `common/`, как в Node, нет: `apperr` и `httpx` — маленькие пакеты, и третий уровень группировки в Go был бы лишним.
+- **`core/config`** описывает все переменные приложения, включая ключи YouTube и LLM, — как `core/config/env.schema.ts` в Node. Это конфигурация процесса, а не бизнес-логика; модули получают уже готовые значения через конструкторы.
+- **Граница проверяется линтером.** Компилятор запрещает только циклы импортов, а правило `depguard` в `.golangci.yml` запрещает `core` импортировать `modules`, `httpapi` и `migrations`, а `modules` — `httpapi`. Нарушение — ошибка `make lint`:
+
+```
+internal/core/config/x.go:4:8: import 'ytcomments/internal/modules/llm' is not allowed from list 'core':
+core — инфраструктура без бизнес-смысла и не знает о модулях (depguard)
+```
+
+В Go имя пакета не зависит от каталога: импорт `ytcomments/internal/core/postgres`, а в коде по-прежнему `postgres.Connect`. Глубина каталогов на читаемость кода не влияет.
+
+### Направление зависимостей внутри модуля
 
 ```
 cmd/api ────► httpapi ──► analysis.Handler ──► analysis.Service ──► TaskStore, TaskQueue (интерфейсы)
@@ -76,7 +103,7 @@ cmd/worker ─► asynq ──► analysis.TaskHandler ──► analysis.Analyz
 - Пакет в Go — это каталог; все его файлы видят друг друга целиком.
 - Видимость задаётся регистром: `Service` экспортирован, `service` — нет. Аналог `_private`, но проверяемый компилятором.
 - Каталог `internal/` запрещает импортировать код извне модуля.
-- Код организован по доменам, а не по слоям: вместо `models/`, `services/`, `handlers/` (как `app/models` в Rails) есть пакет `analysis`, в котором лежит всё о домене. Новый домен — новый пакет рядом.
+- Код организован по доменам, а не по слоям: вместо `models/`, `services/`, `handlers/` (как `app/models` в Rails) есть пакет `modules/analysis`, в котором лежит всё о домене. Новый домен — новый пакет рядом.
 - Круговые импорты в Go запрещены компилятором, поэтому направление зависимостей не просто договорённость.
 
 **Интерфейсы объявляются у потребителя.**
@@ -163,23 +190,23 @@ cmd/worker ─► asynq ──► analysis.TaskHandler ──► analysis.Analyz
 
 | Слой | Тип | Где |
 |---|---|---|
-| домен | `analysis.Task`, `analysis.Comment` | `analysis/model.go` |
-| хранение | `analysisdb.AnalysisTask` (генерирует sqlc по схеме таблицы) | `analysis/analysisdb/` |
-| API | `analyzeRequest`, `taskCreatedResponse`, `taskStatusResponse`, `commentResponse` | `analysis/handler.go` |
+| домен | `analysis.Task`, `analysis.Comment` | `modules/analysis/model.go` |
+| хранение | `analysisdb.AnalysisTask` (генерирует sqlc по схеме таблицы) | `modules/analysis/analysisdb/` |
+| API | `analyzeRequest`, `taskCreatedResponse`, `taskStatusResponse`, `commentResponse` | `modules/analysis/handler.go` |
 
 - В Python это `AnalysisTask`, `AnalysisTaskOrm` и `AnalyzeRequest` / `TaskStatusResponse` / `CommentSchema`.
 - В Go имя пакета — часть имени: снаружи пишут `analysis.Task`, поэтому `analysis.AnalysisTask` было бы повтором. Модель хранения отличается пакетом (`analysisdb.`), а не суффиксом.
 - Схемы API названы по роли единым шаблоном `<что><Request|Response>` и не экспортируются: за пределами хендлера они не нужны.
 - У доменных типов нет JSON-тегов. Форму JSON задают слои, которым она нужна: HTTP (`commentResponse`), хранилище (`storedComment` в колонке `result`) и промпт LLM (`promptComment`).
 
-**Репозиторий** (`analysis/repository.go`) — Data Mapper, как в Python-версии: переводит `Task` в параметры сгенерированного запроса и обратно.
+**Репозиторий** (`modules/analysis/repository.go`) — Data Mapper, как в Python-версии: переводит `Task` в параметры сгенерированного запроса и обратно.
 - Каждая операция — своя короткая транзакция (`pgx.BeginFunc`: `COMMIT` при `nil`, иначе `ROLLBACK`). Соединение берётся из пула только на время запроса: обработка задачи в воркере длится минутами, держать соединение всё это время незачем.
 - `Save` — upsert (`INSERT ... ON CONFLICT (id) DO UPDATE`), аналог `session.merge`. `created_at` при обновлении не меняется.
 - Репозиторий зависит не от пула, а от маленького интерфейса `TxBeginner` с одним методом `Begin`. Ему удовлетворяют и `*pgxpool.Pool`, и `pgx.Tx`. У транзакции `Begin` создаёт `SAVEPOINT`, поэтому в тестах репозиторий без изменений работает внутри внешней транзакции, как `join_transaction_mode="create_savepoint"` в Python.
 - Ошибки: `pgx.ErrNoRows` → `ErrTaskNotFound` (404). Недоступность базы → `ErrStorageUnavailable` (503): не удалось подключиться, разрыв, таймаут, а также ответы сервера классов `08` (соединение), `53` (`too_many_connections`), `57P` (сервер выключается) и `3D000` (базы нет), см. `postgres.IsUnavailable`. Ошибка самого запроса — внутренняя (500): это баг, а не повод сказать клиенту «попробуйте позже».
 
 **SQL и sqlc.**
-- Запросы пишутся руками в `analysis/analysisdb/queries.sql`, а [sqlc](https://sqlc.dev) генерирует по ним и по схеме из миграций типобезопасный Go-код: структуру `AnalysisTask`, `UpsertTaskParams` и методы `UpsertTask`, `GetTask`. Опечатка в имени колонки — ошибка генерации, а не падение в рантайме.
+- Запросы пишутся руками в `modules/analysis/analysisdb/queries.sql`, а [sqlc](https://sqlc.dev) генерирует по ним и по схеме из миграций типобезопасный Go-код: структуру `AnalysisTask`, `UpsertTaskParams` и методы `UpsertTask`, `GetTask`. Опечатка в имени колонки — ошибка генерации, а не падение в рантайме.
 - Сгенерированный код лежит в репозитории, поэтому для сборки и тестов sqlc не нужен. После изменения SQL или миграций: `make generate`.
 - sqlc — инструмент проекта, а не системная установка: версия зафиксирована в `tools/go.mod` (директива `tool`, Go 1.24+), а `go tool sqlc` сам скачивает и собирает её. Аналог гема в Gemfile с `bundle exec` или `devDependencies` с `npx`. Отдельный модуль нужен, чтобы тяжёлые зависимости sqlc (парсер Postgres) не попадали в `go.mod` приложения.
 
@@ -193,8 +220,8 @@ make db-rollback   # migrate down    (rails db:rollback)
 make db-status     # migrate status  (rails db:migrate:status)
 ```
 
-- Миграции — SQL-файлы [goose](https://github.com/pressly/goose) в `internal/postgres/migrations` с секциями `-- +goose Up` / `-- +goose Down`. Через `go:embed` они вшиты в бинарник, так что образу не нужны ни исходники, ни отдельный CLI.
-- Новая миграция — файл `00002_<что>.sql` рядом. Автогенерации по моделям, как `alembic revision --autogenerate`, нет: в Go нет ORM-моделей, схема описывается только SQL.
+- Миграции — SQL-файлы [goose](https://github.com/pressly/goose) в `migrations/` в корне проекта с секциями `-- +goose Up` / `-- +goose Down`. Через `go:embed` они вшиты в бинарник, так что образу не нужны ни исходники, ни отдельный CLI.
+- Новая миграция — файл `migrations/00002_<что>.sql`. Автогенерации по моделям, как `alembic revision --autogenerate`, нет: в Go нет ORM-моделей, схема описывается только SQL.
 - Миграции идут под advisory lock Postgres: если их одновременно запустят два процесса, второй дождётся первого.
 - В Postgres нет `CREATE DATABASE IF NOT EXISTS`, а саму команду нельзя выполнить ни в транзакции, ни подключившись к создаваемой базе. Поэтому `postgres.CreateDatabase` подключается к служебной базе `postgres`, проверяет `pg_database` и выполняет `CREATE DATABASE`. Если базу параллельно создал другой процесс (`42P04 duplicate_database`), это тоже успех.
 - `migrate` читает только `DATABASE_URL` (`config.LoadDatabase`): ключи YouTube и LLM ему не нужны. Конфигурация разделена: `config.Database` встроена в `config.Config` (embedding), как `class Settings(DatabaseSettings)` в Python.
@@ -259,10 +286,10 @@ worker: llm: unknown provider "acme" (supported: deepseek, openai)
 
 | Константа | Значение | Где |
 |---|---|---|
-| лимит параллельных запросов к LLM | 4 | `analysis/classifier.go` |
+| лимит параллельных запросов к LLM | 4 | `modules/analysis/classifier.go` |
 | concurrency воркера | 4 | `cmd/worker` |
-| таймаут одной попытки | 10 мин | `analysis/queue.go` |
-| число повторов | 3 | `analysis/queue.go` |
+| таймаут одной попытки | 10 мин | `modules/analysis/queue.go` |
+| число повторов | 3 | `modules/analysis/queue.go` |
 | HTTP-таймаут YouTube | 15 с | `cmd/worker` |
 | HTTP-таймаут LLM | 2 мин | `cmd/worker` |
 
@@ -307,11 +334,11 @@ make test-cover   # покрытие
 ```
 
 **Тестовая база — настоящий Postgres**, как в Rails, а не SQLite или подмена в памяти: они скрывают различия СУБД (`jsonb`, `ON CONFLICT`, `timestamptz`).
-- База `analysis_go_test` создаётся сама. Схема накатывается миграциями один раз на прогон пакета (`pgtest.Main` в `TestMain`, аналог `before(:suite)`): заодно проверяется, что миграции применяются.
+- База `analysis_go_test` создаётся сама. Схема накатывается миграциями один раз на прогон пакета (`pgtest.Main(m, migrations.FS)` в `TestMain`, аналог `before(:suite)`): заодно проверяется, что миграции применяются.
 - `go test ./...` запускает каждый пакет отдельным процессом, параллельно, поэтому «один раз на прогон» — это один раз на пакет. Создание базы идемпотентно, миграции идут под advisory lock, так что пакеты друг другу не мешают.
 - Каждый тест работает в транзакции, которая откатывается в конце (`pgtest.Tx`, как `use_transactional_tests`). Код, который сам открывает транзакции, получает внутри неё savepoint.
 - Исключение — e2e: API и воркер работают одновременно в разных горутинах, а транзакция — одно соединение, которое нельзя использовать конкурентно (та же оговорка есть в Python-версии). Там пул с настоящими коммитами, и тест удаляет свои задачи в `t.Cleanup`.
-- Полный цикл миграций up → down → up проверяется в отдельной временной схеме тестовой базы: откат в общей схеме сломал бы параллельно идущие пакеты.
+- Полный цикл миграций up → down → up проверяет `migrations/migrations_test.go` в отдельной временной схеме тестовой базы: откат в общей схеме сломал бы параллельно идущие пакеты.
 - Если Postgres не запущен, пакет останавливается одной строкой с подсказкой, а не десятком одинаковых ошибок соединения:
 
 ```
@@ -323,15 +350,16 @@ pgtest: is Postgres running? Start the shared infrastructure: docker compose -f 
 
 | Что | Где | Как |
 |---|---|---|
-| разбор ссылок | `analysis/videourl_test.go` | табличный тест, 25 случаев |
-| группировка | `analysis/grouping_test.go` | выдуманные и повторяющиеся id, неизвестные категории |
-| сервис и анализатор | `analysis/service_test.go` | фейки интерфейсов; таблица исходов: успех, ошибка источника, временная ошибка, последняя попытка, таймаут, shutdown |
-| классификатор | `analysis/classifier_test.go` | батчи, ограничение параллелизма, порядок, валидация ответа, комментарии передаются как JSON |
-| хранилище | `analysis/repository_test.go` | Postgres в транзакции: round trip, upsert, формат колонок (совместимость с Python), не найдено, база недоступна → 503, ошибка запроса → 500 |
-| база и миграции | `postgres/postgres_test.go` | создание базы идемпотентно, миграции up → down → up, классификация ошибок |
-| клиент YouTube | `youtube/client_test.go` | `httptest`: пагинация до лимита, ключ в заголовке, ретраи 5xx/429, ошибки 404/403/400 как `CommentSourceError`, отмена |
-| клиент LLM | `llm/openai_test.go` | `httptest`: `tool_choice`, заголовок `Authorization`, токены |
-| конфигурация | `config/config_test.go` | значения по умолчанию, ошибки, маскирование, поиск `.env`, `ParseDatabase` без ключей API |
+| разбор ссылок | `modules/analysis/videourl_test.go` | табличный тест, 25 случаев |
+| группировка | `modules/analysis/grouping_test.go` | выдуманные и повторяющиеся id, неизвестные категории |
+| сервис и анализатор | `modules/analysis/service_test.go` | фейки интерфейсов; таблица исходов: успех, ошибка источника, временная ошибка, последняя попытка, таймаут, shutdown |
+| классификатор | `modules/analysis/classifier_test.go` | батчи, ограничение параллелизма, порядок, валидация ответа, комментарии передаются как JSON |
+| хранилище | `modules/analysis/repository_test.go` | Postgres в транзакции: round trip, upsert, формат колонок (совместимость с Python), не найдено, база недоступна → 503, ошибка запроса → 500 |
+| база | `core/postgres/postgres_test.go` | создание базы идемпотентно, классификация ошибок |
+| миграции | `migrations/migrations_test.go` | up → down → up во временной схеме |
+| клиент YouTube | `modules/youtube/client_test.go` | `httptest`: пагинация до лимита, ключ в заголовке, ретраи 5xx/429, ошибки 404/403/400 как `CommentSourceError`, отмена |
+| клиент LLM | `modules/llm/openai_test.go` | `httptest`: `tool_choice`, заголовок `Authorization`, токены |
+| конфигурация | `core/config/config_test.go` | значения по умолчанию, ошибки, маскирование, поиск `.env`, `ParseDatabase` без ключей API |
 | HTTP API целиком | `httpapi/router_test.go` | Postgres в транзакции: контракт, 422/404, 503 при недоступном Postgres или Redis, CORS |
 | путь «API → очередь → воркер» | `test/e2e/pipeline_test.go` | настоящий asynq на miniredis, задачи в Postgres; итог проверяется и в таблице |
 
@@ -361,7 +389,7 @@ worker msg="task completed" duration=11.536s categories="map[Feedback:170 Questi
 
 | | Python (FastAPI) | Go |
 |---|---|---|
-| Структура | `src/app/analysis/` + `core/`, `clients/` | `internal/analysis/` + `youtube/`, `llm/`, `httpx/`, `config/` |
+| Структура | `src/app/analysis/` + `core/`, `clients/`, `db/` | `internal/modules/{analysis,youtube,llm}` + `internal/core/{config,logging,postgres,health,httpx,apperr}`; граница проверяется `depguard` |
 | Точки входа | `asgi.py` + `worker.py` (`taskiq worker app.worker:broker`) + `python -m app.db.create` и `alembic` | `cmd/api`, `cmd/worker`, `cmd/migrate` — три бинарника в одном образе |
 | Сборка зависимостей | `lifespan`, `app.state`, `Depends`, `dependency_overrides` в тестах | явно в `main`, конструкторы; в тестах передаются фейки |
 | Абстракции | `Protocol` (`TaskQueue`, `CommentSource`, `CommentClassifier`) | интерфейсы у потребителя (`TaskStore`, `TaskQueue`, `CommentSource`, `Classifier`, `ToolCaller`) |
@@ -373,7 +401,7 @@ worker msg="task completed" duration=11.536s categories="map[Feedback:170 Questi
 | Таймаут чтения Redis | пришлось отключать `socket_timeout` | не нужен: asynq не блокируется, go-redis продлевает дедлайн сам |
 | Параллельность LLM | `asyncio.gather` без ограничения | `errgroup.SetLimit(4)` с отменой при первой ошибке |
 | Структурированный ответ | pydantic-ai, `output_type` | tool calling через openai-go + ручная проверка схемы |
-| LLM-провайдеры | всё, что умеет pydantic-ai (включая нативный Anthropic) | только OpenAI-совместимые API; новый — одна строка в `llm/openai.go` |
+| LLM-провайдеры | всё, что умеет pydantic-ai (включая нативный Anthropic) | только OpenAI-совместимые API; новый — одна строка в `modules/llm/openai.go` |
 | Логи | `logging`, `[task_id]` в тексте сообщения | `slog`, `task_id=` как поле, через context |
 | Конфигурация | pydantic-settings, `.env` в текущем каталоге | `env` + `godotenv`, `.env` ищется до корня модуля |
 | Секреты | `SecretStr` | `config.Secret` (`String`/`LogValue` печатают `***`) |

@@ -19,14 +19,16 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
 
-	"ytcomments/internal/analysis"
-	"ytcomments/internal/analysis/analysistest"
+	"ytcomments/internal/core/health"
+	"ytcomments/internal/core/logging"
+	"ytcomments/internal/core/postgres/pgtest"
 	"ytcomments/internal/httpapi"
-	"ytcomments/internal/logging"
-	"ytcomments/internal/postgres/pgtest"
+	"ytcomments/internal/modules/analysis"
+	"ytcomments/internal/modules/analysis/analysistest"
+	"ytcomments/migrations"
 )
 
-func TestMain(m *testing.M) { pgtest.Main(m) }
+func TestMain(m *testing.M) { pgtest.Main(m, migrations.FS) }
 
 // readTimeout намеренно маленький: воркер простаивает дольше него (см. ниже).
 const readTimeout = 200 * time.Millisecond
@@ -55,9 +57,9 @@ func startPipeline(t *testing.T, source analysis.CommentSource) *pipeline {
 	service := analysis.NewService(repo, analysis.NewAsynqQueue(asynq.NewClientFromRedisClient(rdb)), logger)
 	api := httptest.NewServer(httpapi.NewRouter(httpapi.Deps{
 		Analysis: analysis.NewHandler(service, logger),
-		Health: []httpapi.HealthCheck{
+		Health: []health.Check{
 			{Name: "postgres", Pinger: db},
-			{Name: "redis", Pinger: httpapi.PingerFunc(func(ctx context.Context) error { return rdb.Ping(ctx).Err() })},
+			{Name: "redis", Pinger: health.PingerFunc(func(ctx context.Context) error { return rdb.Ping(ctx).Err() })},
 		},
 		Logger: logger,
 	}))

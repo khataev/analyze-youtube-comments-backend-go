@@ -22,9 +22,10 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"ytcomments/internal/config"
-	"ytcomments/internal/logging"
-	"ytcomments/internal/postgres"
+	"ytcomments/internal/core/config"
+	"ytcomments/internal/core/logging"
+	"ytcomments/internal/core/postgres"
+	"ytcomments/migrations"
 )
 
 const usage = `usage: migrate [command]
@@ -102,7 +103,7 @@ func createDatabase(ctx context.Context, logger *slog.Logger, databaseURL string
 }
 
 func withMigrator(databaseURL string, logger *slog.Logger, fn func(*postgres.Migrator) error) (err error) {
-	m, err := postgres.NewMigrator(databaseURL, logger)
+	m, err := postgres.NewMigrator(databaseURL, migrations.FS, logger)
 	if err != nil {
 		return err
 	}

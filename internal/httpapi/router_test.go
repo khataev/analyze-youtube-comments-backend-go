@@ -15,15 +15,17 @@ import (
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 
-	"ytcomments/internal/analysis"
-	"ytcomments/internal/analysis/analysistest"
+	"ytcomments/internal/core/health"
+	"ytcomments/internal/core/logging"
+	"ytcomments/internal/core/postgres"
+	"ytcomments/internal/core/postgres/pgtest"
 	"ytcomments/internal/httpapi"
-	"ytcomments/internal/logging"
-	"ytcomments/internal/postgres"
-	"ytcomments/internal/postgres/pgtest"
+	"ytcomments/internal/modules/analysis"
+	"ytcomments/internal/modules/analysis/analysistest"
+	"ytcomments/migrations"
 )
 
-func TestMain(m *testing.M) { pgtest.Main(m) }
+func TestMain(m *testing.M) { pgtest.Main(m, migrations.FS) }
 
 // testApp — приложение целиком: настоящие роутер, хендлер, сервис и репозиторий на
 // тестовой базе Postgres; подменена только очередь. Redis нужен лишь /health — это miniredis.
@@ -39,10 +41,10 @@ type testApp struct {
 func newTestApp(t *testing.T) *testApp {
 	t.Helper()
 	tx := pgtest.Tx(t)
-	return newTestAppWithDB(t, tx, httpapi.PingerFunc(func(ctx context.Context) error { return tx.Conn().Ping(ctx) }))
+	return newTestAppWithDB(t, tx, health.PingerFunc(func(ctx context.Context) error { return tx.Conn().Ping(ctx) }))
 }
 
-func newTestAppWithDB(t *testing.T, db analysis.TxBeginner, dbPinger httpapi.Pinger) *testApp {
+func newTestAppWithDB(t *testing.T, db analysis.TxBeginner, dbPinger health.Pinger) *testApp {
 	t.Helper()
 	mr := miniredis.RunT(t)
 	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr(), MaxRetries: -1})
@@ -53,9 +55,9 @@ func newTestAppWithDB(t *testing.T, db analysis.TxBeginner, dbPinger httpapi.Pin
 	queue := &analysistest.Queue{}
 	router := httpapi.NewRouter(httpapi.Deps{
 		Analysis: analysis.NewHandler(analysis.NewService(repo, queue, logger), logger),
-		Health: []httpapi.HealthCheck{
+		Health: []health.Check{
 			{Name: "postgres", Pinger: dbPinger},
-			{Name: "redis", Pinger: httpapi.PingerFunc(func(ctx context.Context) error { return rdb.Ping(ctx).Err() })},
+			{Name: "redis", Pinger: health.PingerFunc(func(ctx context.Context) error { return rdb.Ping(ctx).Err() })},
 		},
 		CORSOrigins: []string{"http://localhost:5173"},
 		Logger:      logger,

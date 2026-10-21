@@ -4,12 +4,12 @@
 version: "2"
 sql:
   - engine: postgresql
-    schema: internal/postgres/migrations
-    queries: internal/analysis/analysisdb/queries.sql
+    schema: migrations
+    queries: internal/modules/analysis/analysisdb/queries.sql
     gen:
       go:
         package: analysisdb
-        out: internal/analysis/analysisdb
+        out: internal/modules/analysis/analysisdb
         sql_package: pgx/v5
         emit_pointers_for_null_types: true # NULL-колонки — *string, а не pgtype.Text
         overrides:

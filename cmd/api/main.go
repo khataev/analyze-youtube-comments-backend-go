@@ -20,11 +20,12 @@ import (
 	"github.com/hibiken/asynq"
 	"github.com/redis/go-redis/v9"
 
-	"ytcomments/internal/analysis"
-	"ytcomments/internal/config"
+	"ytcomments/internal/core/config"
+	"ytcomments/internal/core/health"
+	"ytcomments/internal/core/logging"
+	"ytcomments/internal/core/postgres"
 	"ytcomments/internal/httpapi"
-	"ytcomments/internal/logging"
-	"ytcomments/internal/postgres"
+	"ytcomments/internal/modules/analysis"
 )
 
 const (
@@ -83,9 +84,9 @@ func run() error {
 	)
 	router := httpapi.NewRouter(httpapi.Deps{
 		Analysis: analysis.NewHandler(service, logger),
-		Health: []httpapi.HealthCheck{
+		Health: []health.Check{
 			{Name: "postgres", Pinger: db},
-			{Name: "redis", Pinger: httpapi.PingerFunc(func(ctx context.Context) error { return rdb.Ping(ctx).Err() })},
+			{Name: "redis", Pinger: health.PingerFunc(func(ctx context.Context) error { return rdb.Ping(ctx).Err() })},
 		},
 		CORSOrigins: cfg.CORSOrigins,
 		Logger:      logger,
