@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/google/go-cmp/cmp"
 )
@@ -19,7 +18,7 @@ func TestParseDefaults(t *testing.T) {
 	}
 	want := Config{
 		Database:           Database{DatabaseURL: "postgres://app:app@localhost:5432/analysis_go?sslmode=disable"},
-		RedisURL:           "redis://localhost:6379/0",
+		RedisURL:           "redis://localhost:6379/1",
 		CORSOrigins:        StringList{"http://localhost:5173"},
 		LogLevel:           LogLevel(slog.LevelInfo),
 		YouTubeAPIKey:      "yt",
@@ -28,13 +27,9 @@ func TestParseDefaults(t *testing.T) {
 		LLMAPIKey:          "sk", // ключ провайдера из OPENAI_API_KEY, как в pydantic-ai
 		LLMKeySource:       "OPENAI_API_KEY",
 		LLMBatchSize:       50,
-		TaskTTLSeconds:     86400,
 	}
 	if diff := cmp.Diff(want, cfg); diff != "" {
 		t.Errorf("config mismatch (-want +got):\n%s", diff)
-	}
-	if cfg.TaskTTL() != 24*time.Hour {
-		t.Errorf("TaskTTL = %v", cfg.TaskTTL())
 	}
 }
 

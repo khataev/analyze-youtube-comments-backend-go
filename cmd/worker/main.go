@@ -23,6 +23,7 @@ import (
 	"ytcomments/internal/config"
 	"ytcomments/internal/llm"
 	"ytcomments/internal/logging"
+	"ytcomments/internal/postgres"
 	"ytcomments/internal/youtube"
 )
 
@@ -71,16 +72,24 @@ func run() error {
 		return err
 	}
 
+	db, err := postgres.NewPool(cfg.DatabaseURL)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+
 	redisOpts, err := redis.ParseURL(cfg.RedisURL)
 	if err != nil {
 		return fmt.Errorf("parse REDIS_URL: %w", err)
 	}
 	rdb := redis.NewClient(redisOpts)
 	defer closeWithLog(logger, "redis", rdb.Close)
-	pingRedis(ctx, logger, rdb, cfg.RedisURL)
+
+	probe(ctx, logger, "postgres", cfg.DatabaseURL, db.Ping)
+	probe(ctx, logger, "redis", cfg.RedisURL, func(ctx context.Context) error { return rdb.Ping(ctx).Err() })
 
 	analyzer := analysis.NewAnalyzer(
-		analysis.NewRedisRepository(rdb, cfg.TaskTTL()),
+		analysis.NewPostgresRepository(db),
 		youtube.NewClient(
 			&http.Client{Transport: transport, Timeout: youtubeHTTPTimeout},
 			cfg.YouTubeAPIKey.Reveal(), cfg.YouTubeMaxComments,
@@ -116,6 +125,7 @@ func run() error {
 		return fmt.Errorf("start worker: %w", err)
 	}
 	logger.Info("worker ready",
+		"postgres", config.RedactURL(cfg.DatabaseURL),
 		"redis", config.RedactURL(cfg.RedisURL),
 		"queue", analysis.QueueName,
 		"tasks", []string{analysis.TypeAnalyzeVideo},
@@ -143,15 +153,18 @@ func newTransport() *http.Transport {
 	return t
 }
 
-func pingRedis(ctx context.Context, logger *slog.Logger, rdb *redis.Client, url string) {
+// probe проверяет зависимость при старте, но не роняет процесс: Postgres или Redis
+// могут подняться позже (/health до тех пор отдаёт 503, asynq переподключается сам).
+// Зато в логе сразу видно, куда процесс подключается (пароль замаскирован).
+func probe(ctx context.Context, logger *slog.Logger, name, url string, ping func(context.Context) error, attrs ...any) {
 	ctx, cancel := context.WithTimeout(ctx, startupPingTimeout)
 	defer cancel()
-	if err := rdb.Ping(ctx).Err(); err != nil {
-		// asynq сам будет переподключаться, но причина видна сразу.
-		logger.WarnContext(ctx, "redis is unavailable", "redis", config.RedactURL(url), "error", err)
+	attrs = append([]any{name, config.RedactURL(url)}, attrs...)
+	if err := ping(ctx); err != nil {
+		logger.WarnContext(ctx, name+" is unavailable", append(attrs, "error", err)...)
 		return
 	}
-	logger.InfoContext(ctx, "redis is available", "redis", config.RedactURL(url))
+	logger.InfoContext(ctx, name+" is available", attrs...)
 }
 
 func closeWithLog(logger *slog.Logger, name string, closeFn func() error) {

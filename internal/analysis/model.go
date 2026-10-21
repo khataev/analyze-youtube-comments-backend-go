@@ -6,7 +6,7 @@
 //
 // Внутри пакета зависимости всё равно направлены в одну сторону:
 // handler → Service/Analyzer → интерфейсы (TaskStore, TaskQueue, CommentSource, Classifier).
-// Конкретные реализации (Redis, asynq, YouTube, LLM) подставляет main.
+// Конкретные реализации (Postgres, asynq, YouTube, LLM) подставляет main.
 package analysis
 
 import (
@@ -58,9 +58,12 @@ func (c Category) Valid() bool { return slices.Contains(Categories, c) }
 
 // Comment — комментарий к видео. Доменный тип: источник комментариев (клиент YouTube)
 // возвращает именно его, поэтому домен не зависит от клиента, а клиент — от домена.
+//
+// JSON-тегов у доменных типов нет: форму JSON задают слои, которым она нужна, —
+// HTTP (commentResponse), хранилище (storedComment) и промпт LLM (promptComment).
 type Comment struct {
-	ID   string `json:"id"`
-	Text string `json:"text"`
+	ID   string
+	Text string
 }
 
 // Result — комментарии, сгруппированные по категориям. Пустые категории отсутствуют.
@@ -73,15 +76,17 @@ type Classification struct {
 	Reasoning string   `json:"reasoning"`
 }
 
-// Task — запись о задаче. Хранится в Redis как JSON; формат совместим с Python-версией.
+// Task — задача анализа (AnalysisTask в Python-версии). В Go имя пакета — часть имени:
+// снаружи это analysis.Task, так что приставка Analysis была бы повтором.
+// Доменная сущность ничего не знает о хранении: модель таблицы — analysisdb.AnalysisTask.
 type Task struct {
-	ID        uuid.UUID `json:"task_id"`
-	VideoID   string    `json:"video_id"`
-	Status    Status    `json:"status"`
-	Result    Result    `json:"result"`
-	Error     string    `json:"error,omitempty"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	ID        uuid.UUID
+	VideoID   string
+	Status    Status
+	Result    Result // nil, пока результата нет
+	Error     string // сообщение для пользователя, если задача упала
+	CreatedAt time.Time
+	UpdatedAt time.Time
 }
 
 // Доменные ошибки. Вид ошибки (а не HTTP-код!) задаётся здесь, код выбирает httpx.
@@ -91,6 +96,12 @@ var (
 	ErrInvalidTaskID      = apperr.New(apperr.KindInvalid, "Invalid task_id: must be a UUID")
 	ErrStorageUnavailable = apperr.New(apperr.KindUnavailable, "Storage is unavailable")
 )
+
+// unavailable помечает ошибку хранилища или очереди как недоступность (клиент получит 503),
+// сохраняя причину в цепочке для логов.
+func unavailable(err error) error {
+	return apperr.Wrap(ErrStorageUnavailable.Kind, ErrStorageUnavailable.Message, err)
+}
 
 // CommentSourceError — источник не смог отдать комментарии, и повтор не поможет
 // (видео нет, комментарии отключены). Message попадает в статус задачи как есть,

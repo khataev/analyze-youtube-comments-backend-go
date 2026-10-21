@@ -2,15 +2,15 @@
 .DEFAULT_GOAL := help
 
 .PHONY: help run-api run-worker build test test-cover lint fmt tidy docker-up docker-down \
-	db-prepare db-create db-migrate db-rollback db-status
+	db-prepare db-create db-migrate db-rollback db-status generate
 
 help: ## Показать список команд
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-13s %s\n", $$1, $$2}'
 
-run-api: ## Запустить API локально (нужен Redis)
+run-api: ## Запустить API локально (нужны Postgres и Redis из ../docker-compose.yml)
 	go run ./cmd/api
 
-run-worker: ## Запустить воркер локально (нужен Redis)
+run-worker: ## Запустить воркер локально (нужны Postgres и Redis)
 	go run ./cmd/worker
 
 # Аналоги rails db:*. Читают только DATABASE_URL из окружения или .env.
@@ -32,7 +32,7 @@ db-status: ## Состояние миграций (rails db:migrate:status)
 build: ## Собрать бинарники в bin/
 	go build -o bin/ ./cmd/...
 
-test: ## Тесты с детектором гонок (внешние сервисы не нужны)
+test: ## Тесты с детектором гонок (нужен Postgres: база analysis_go_test создаётся сама)
 	go test -race -count=1 ./...
 
 test-cover: ## Тесты с отчётом о покрытии
@@ -47,6 +47,12 @@ fmt: ## Отформатировать код
 
 tidy: ## Привести go.mod/go.sum в порядок
 	go mod tidy
+	go -C tools mod tidy
+
+# sqlc — инструмент проекта (tools/go.mod), а не системная установка: версия зафиксирована,
+# `go tool` сам скачает и соберёт её при первом запуске (как bundle exec / npx).
+generate: ## Перегенерировать код запросов к БД (sqlc)
+	go -C tools tool sqlc generate -f ../sqlc.yaml
 
 docker-up: ## Поднять redis + api + worker в Docker
 	docker compose up --build

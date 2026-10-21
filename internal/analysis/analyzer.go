@@ -55,7 +55,7 @@ func (a *Analyzer) Run(ctx context.Context, id uuid.UUID, lastAttempt bool) erro
 
 	task, err := a.store.Get(ctx, id)
 	if errors.Is(err, ErrTaskNotFound) {
-		a.logger.WarnContext(ctx, "task not found (expired?), skipping")
+		a.logger.WarnContext(ctx, "task not found, skipping")
 		return nil
 	}
 	if err != nil {

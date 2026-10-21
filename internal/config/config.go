@@ -15,7 +15,6 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
-	"time"
 
 	"github.com/caarlos0/env/v11"
 	"github.com/jackc/pgx/v5"
@@ -41,7 +40,7 @@ type Database struct {
 type Config struct {
 	Database
 
-	RedisURL    string     `env:"REDIS_URL"    envDefault:"redis://localhost:6379/0"`
+	RedisURL    string     `env:"REDIS_URL"    envDefault:"redis://localhost:6379/1"`
 	CORSOrigins StringList `env:"CORS_ORIGINS" envDefault:"[\"http://localhost:5173\"]"`
 	LogLevel    LogLevel   `env:"LOG_LEVEL"    envDefault:"INFO"`
 
@@ -55,13 +54,6 @@ type Config struct {
 	LLMBatchSize int    `env:"LLM_BATCH_SIZE" envDefault:"50"`
 	// Откуда взят ключ LLM — только для лога при старте.
 	LLMKeySource string `env:"-"`
-
-	TaskTTLSeconds int `env:"TASK_TTL_SECONDS" envDefault:"86400"`
-}
-
-// TaskTTL — TTL записи задачи в виде time.Duration.
-func (c Config) TaskTTL() time.Duration {
-	return time.Duration(c.TaskTTLSeconds) * time.Second
 }
 
 // Load ищет и подгружает .env (если он есть), затем читает окружение и валидирует.
@@ -147,7 +139,6 @@ func (c Config) validate() error {
 	for name, value := range map[string]int{
 		"YOUTUBE_MAX_COMMENTS": c.YouTubeMaxComments,
 		"LLM_BATCH_SIZE":       c.LLMBatchSize,
-		"TASK_TTL_SECONDS":     c.TaskTTLSeconds,
 	} {
 		if value <= 0 {
 			errs = append(errs, fmt.Errorf("%s must be greater than 0, got %d", name, value))

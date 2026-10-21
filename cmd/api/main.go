@@ -1,7 +1,7 @@
 // Команда api — HTTP-сервер: принимает ссылки, ставит задачи в очередь, отдаёт статусы.
 //
 // main — composition root: здесь и только здесь создаются конкретные реализации
-// (Redis, asynq, сервис) и связываются друг с другом. Остальной код получает
+// (Postgres, Redis, asynq, сервис) и связываются друг с другом. Остальной код получает
 // зависимости через конструкторы. Аналог lifespan + deps.py в FastAPI, но явно и без магии.
 package main
 
@@ -24,6 +24,7 @@ import (
 	"ytcomments/internal/config"
 	"ytcomments/internal/httpapi"
 	"ytcomments/internal/logging"
+	"ytcomments/internal/postgres"
 )
 
 const (
@@ -54,26 +55,38 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	// Пул Postgres: задачи и их результаты. Соединения открываются по требованию.
+	db, err := postgres.NewPool(cfg.DatabaseURL)
+	if err != nil {
+		return err
+	}
+	defer db.Close() // defer выполняются в обратном порядке: пул закроется последним
+
 	redisOpts, err := redis.ParseURL(cfg.RedisURL) // URL уже проверен в config
 	if err != nil {
 		return fmt.Errorf("parse REDIS_URL: %w", err)
 	}
 	rdb := redis.NewClient(redisOpts)
-	defer closeWithLog(logger, "redis", rdb.Close) // defer выполняются в обратном порядке: Redis закроется последним
+	defer closeWithLog(logger, "redis", rdb.Close)
 
-	pingRedis(ctx, logger, rdb, cfg.RedisURL)
+	probe(ctx, logger, "postgres", cfg.DatabaseURL, db.Ping)
+	probe(ctx, logger, "redis", cfg.RedisURL, func(ctx context.Context) error { return rdb.Ping(ctx).Err() },
+		"queue", analysis.QueueName)
 
 	// Клиент asynq использует наш пул соединений; закрывать пул — наша забота (rdb.Close выше).
 	queueClient := asynq.NewClientFromRedisClient(rdb)
 
 	service := analysis.NewService(
-		analysis.NewRedisRepository(rdb, cfg.TaskTTL()),
+		analysis.NewPostgresRepository(db),
 		analysis.NewAsynqQueue(queueClient),
 		logger,
 	)
 	router := httpapi.NewRouter(httpapi.Deps{
-		Analysis:    analysis.NewHandler(service, logger),
-		Storage:     httpapi.PingerFunc(func(ctx context.Context) error { return rdb.Ping(ctx).Err() }),
+		Analysis: analysis.NewHandler(service, logger),
+		Health: []httpapi.HealthCheck{
+			{Name: "postgres", Pinger: db},
+			{Name: "redis", Pinger: httpapi.PingerFunc(func(ctx context.Context) error { return rdb.Ping(ctx).Err() })},
+		},
 		CORSOrigins: cfg.CORSOrigins,
 		Logger:      logger,
 	})
@@ -115,16 +128,18 @@ func run() error {
 	return nil
 }
 
-// pingRedis не роняет процесс: Redis может подняться позже (health отдаст 503),
-// но в логе сразу видно, к какому Redis подключаемся и в какую очередь пишем.
-func pingRedis(ctx context.Context, logger *slog.Logger, rdb *redis.Client, url string) {
+// probe проверяет зависимость при старте, но не роняет процесс: Postgres или Redis
+// могут подняться позже (/health до тех пор отдаёт 503, asynq переподключается сам).
+// Зато в логе сразу видно, куда процесс подключается (пароль замаскирован).
+func probe(ctx context.Context, logger *slog.Logger, name, url string, ping func(context.Context) error, attrs ...any) {
 	ctx, cancel := context.WithTimeout(ctx, startupPingTimeout)
 	defer cancel()
-	if err := rdb.Ping(ctx).Err(); err != nil {
-		logger.WarnContext(ctx, "redis is unavailable", "redis", config.RedactURL(url), "error", err)
+	attrs = append([]any{name, config.RedactURL(url)}, attrs...)
+	if err := ping(ctx); err != nil {
+		logger.WarnContext(ctx, name+" is unavailable", append(attrs, "error", err)...)
 		return
 	}
-	logger.InfoContext(ctx, "redis is available", "redis", config.RedactURL(url), "queue", analysis.QueueName)
+	logger.InfoContext(ctx, name+" is available", attrs...)
 }
 
 func closeWithLog(logger *slog.Logger, name string, closeFn func() error) {

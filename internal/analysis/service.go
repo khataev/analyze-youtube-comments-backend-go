@@ -12,11 +12,11 @@ import (
 
 // Интерфейсы объявлены здесь, у потребителя, а не рядом с реализацией.
 // В Go интерфейсы реализуются неявно (structural typing, как Protocol в Python):
-// RedisRepository не пишет «implements TaskStore», ему достаточно иметь нужные методы.
+// PostgresRepository не пишет «implements TaskStore», ему достаточно иметь нужные методы.
 // Поэтому в тестах их подменяют простыми фейками без моков.
 
-// TaskStore хранит записи о задачах.
-// Get возвращает ErrTaskNotFound, если записи нет, и ErrStorageUnavailable, если хранилище недоступно.
+// TaskStore хранит задачи.
+// Get возвращает ErrTaskNotFound, если задачи нет, и ErrStorageUnavailable, если хранилище недоступно.
 type TaskStore interface {
 	Save(ctx context.Context, task *Task) error
 	Get(ctx context.Context, id uuid.UUID) (*Task, error)
@@ -30,12 +30,12 @@ type TaskQueue interface {
 // staleProcessingAfter — после этого времени без обновлений задача в processing
 // считается потерянной. Нужна для одного редкого случая: воркер убит (kill -9, OOM)
 // на последней попытке. asynq тогда архивирует задачу, не вызывая наш код, и
-// запись навсегда осталась бы в processing. Значение больше TaskTimeout с запасом
+// задача навсегда осталась бы в processing. Значение больше TaskTimeout с запасом
 // на возврат задачи по истечении аренды и паузу перед повтором.
 const staleProcessingAfter = TaskTimeout + 5*time.Minute
 
 // Service — сторона API: поставить задачу и узнать её статус.
-// Ничего не знает ни про HTTP, ни про Redis.
+// Ничего не знает ни про HTTP, ни про базу и Redis.
 type Service struct {
 	store  TaskStore
 	queue  TaskQueue
@@ -80,7 +80,7 @@ func (s *Service) Get(ctx context.Context, id uuid.UUID) (*Task, error) {
 		return nil, err
 	}
 	if task.Status == StatusProcessing && s.now().Sub(task.UpdatedAt) > staleProcessingAfter {
-		// Только для ответа: запись не меняем, она истечёт по TTL.
+		// Только для ответа: GET ничего не пишет в базу.
 		task.Status = StatusFailed
 		task.Error = msgProcessingTimeout
 	}

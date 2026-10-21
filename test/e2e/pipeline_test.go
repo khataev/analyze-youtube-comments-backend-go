@@ -1,6 +1,6 @@
 // Package e2e проверяет путь «API → очередь → воркер» целиком: настоящие HTTP-роутер,
-// сервис, Redis-хранилище, очередь и сервер asynq. Redis — miniredis в памяти,
-// YouTube и LLM — фейки. Внешние сервисы не нужны.
+// сервис, репозиторий на тестовой базе Postgres, очередь и сервер asynq.
+// Redis для очереди — miniredis в памяти, YouTube и LLM — фейки.
 package e2e
 
 import (
@@ -16,22 +16,31 @@ import (
 	"github.com/alicebob/miniredis/v2"
 	"github.com/google/go-cmp/cmp"
 	"github.com/hibiken/asynq"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
 
 	"ytcomments/internal/analysis"
 	"ytcomments/internal/analysis/analysistest"
 	"ytcomments/internal/httpapi"
 	"ytcomments/internal/logging"
+	"ytcomments/internal/postgres/pgtest"
 )
+
+func TestMain(m *testing.M) { pgtest.Main(m) }
 
 // readTimeout намеренно маленький: воркер простаивает дольше него (см. ниже).
 const readTimeout = 200 * time.Millisecond
 
 type pipeline struct {
 	api *httptest.Server
+	db  *pgxpool.Pool
 }
 
-// startPipeline поднимает API и воркер поверх одного Redis.
+// startPipeline поднимает API и воркер поверх одного Redis и одной базы.
+//
+// Здесь — пул с настоящими коммитами, а не транзакция с откатом: API и воркер
+// работают одновременно в разных горутинах, а транзакция — одно соединение,
+// которое нельзя использовать конкурентно. Поэтому тест сам удаляет свои задачи (см. start).
 func startPipeline(t *testing.T, source analysis.CommentSource) *pipeline {
 	t.Helper()
 	mr := miniredis.RunT(t)
@@ -39,14 +48,18 @@ func startPipeline(t *testing.T, source analysis.CommentSource) *pipeline {
 	t.Cleanup(func() { _ = rdb.Close() })
 
 	logger := logging.Discard()
-	repo := analysis.NewRedisRepository(rdb, time.Hour)
+	db := pgtest.Pool(t)
+	repo := analysis.NewPostgresRepository(db)
 
 	// Сторона API.
 	service := analysis.NewService(repo, analysis.NewAsynqQueue(asynq.NewClientFromRedisClient(rdb)), logger)
 	api := httptest.NewServer(httpapi.NewRouter(httpapi.Deps{
 		Analysis: analysis.NewHandler(service, logger),
-		Storage:  httpapi.PingerFunc(func(ctx context.Context) error { return rdb.Ping(ctx).Err() }),
-		Logger:   logger,
+		Health: []httpapi.HealthCheck{
+			{Name: "postgres", Pinger: db},
+			{Name: "redis", Pinger: httpapi.PingerFunc(func(ctx context.Context) error { return rdb.Ping(ctx).Err() })},
+		},
+		Logger: logger,
 	}))
 	t.Cleanup(api.Close)
 
@@ -65,7 +78,7 @@ func startPipeline(t *testing.T, source analysis.CommentSource) *pipeline {
 		t.Fatalf("start worker: %v", err)
 	}
 	t.Cleanup(worker.Shutdown) // Cleanup выполняются в обратном порядке: воркер остановится до закрытия Redis
-	return &pipeline{api: api}
+	return &pipeline{api: api, db: db}
 }
 
 type statusBody struct {
@@ -93,6 +106,13 @@ func (p *pipeline) start(t *testing.T, url string) string {
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
 		t.Fatal(err)
 	}
+	// Убрать за собой. Cleanup выполнится после теста, а каждый тест дожидается финального
+	// статуса (waitFinal), так что воркер эту задачу уже не тронет.
+	t.Cleanup(func() {
+		if _, err := p.db.Exec(context.Background(), "DELETE FROM analysis_tasks WHERE id = $1", out.TaskID); err != nil {
+			t.Errorf("cleanup task %s: %v", out.TaskID, err)
+		}
+	})
 	return out.TaskID
 }
 
@@ -136,6 +156,14 @@ func TestPipelineCompletes(t *testing.T) {
 	}
 	if diff := cmp.Diff(want, got); diff != "" {
 		t.Errorf("final status mismatch (-want +got):\n%s", diff)
+	}
+
+	// Итог лежит в таблице, как его записал воркер.
+	var status, text string
+	err := p.db.QueryRow(t.Context(),
+		"SELECT status, result->'Thanks'->1->>'text' FROM analysis_tasks WHERE id = $1", taskID).Scan(&status, &text)
+	if err != nil || status != "completed" || text != "Thanks" {
+		t.Errorf("stored task: status=%q text=%q err=%v", status, text, err)
 	}
 }
 

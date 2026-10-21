@@ -9,7 +9,6 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/alicebob/miniredis/v2"
 	"github.com/google/go-cmp/cmp"
@@ -20,29 +19,44 @@ import (
 	"ytcomments/internal/analysis/analysistest"
 	"ytcomments/internal/httpapi"
 	"ytcomments/internal/logging"
+	"ytcomments/internal/postgres"
+	"ytcomments/internal/postgres/pgtest"
 )
 
-// testApp — приложение целиком: настоящие роутер, хендлер, сервис и Redis-хранилище
-// (на miniredis), подменена только очередь.
+func TestMain(m *testing.M) { pgtest.Main(m) }
+
+// testApp — приложение целиком: настоящие роутер, хендлер, сервис и репозиторий на
+// тестовой базе Postgres; подменена только очередь. Redis нужен лишь /health — это miniredis.
 type testApp struct {
 	server *httptest.Server
 	redis  *miniredis.Miniredis
-	repo   *analysis.RedisRepository
+	repo   *analysis.PostgresRepository
 	queue  *analysistest.Queue
 }
 
+// newTestApp работает внутри транзакции теста: всё записанное откатится в конце.
+// Запросы в тестах идут последовательно, поэтому одного соединения транзакции хватает.
 func newTestApp(t *testing.T) *testApp {
+	t.Helper()
+	tx := pgtest.Tx(t)
+	return newTestAppWithDB(t, tx, httpapi.PingerFunc(func(ctx context.Context) error { return tx.Conn().Ping(ctx) }))
+}
+
+func newTestAppWithDB(t *testing.T, db analysis.TxBeginner, dbPinger httpapi.Pinger) *testApp {
 	t.Helper()
 	mr := miniredis.RunT(t)
 	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr(), MaxRetries: -1})
 	t.Cleanup(func() { _ = rdb.Close() })
 
 	logger := logging.Discard()
-	repo := analysis.NewRedisRepository(rdb, time.Hour)
+	repo := analysis.NewPostgresRepository(db)
 	queue := &analysistest.Queue{}
 	router := httpapi.NewRouter(httpapi.Deps{
-		Analysis:    analysis.NewHandler(analysis.NewService(repo, queue, logger), logger),
-		Storage:     httpapi.PingerFunc(func(ctx context.Context) error { return rdb.Ping(ctx).Err() }),
+		Analysis: analysis.NewHandler(analysis.NewService(repo, queue, logger), logger),
+		Health: []httpapi.HealthCheck{
+			{Name: "postgres", Pinger: dbPinger},
+			{Name: "redis", Pinger: httpapi.PingerFunc(func(ctx context.Context) error { return rdb.Ping(ctx).Err() })},
+		},
 		CORSOrigins: []string{"http://localhost:5173"},
 		Logger:      logger,
 	})
@@ -180,13 +194,27 @@ func TestGetAnalysis(t *testing.T) {
 	}
 }
 
-func TestStorageUnavailable(t *testing.T) {
+func TestHealth(t *testing.T) {
 	app := newTestApp(t)
 	if status, body := app.do(t, http.MethodGet, "/health", ""); status != http.StatusOK || body["status"] != "ok" {
-		t.Fatalf("health before outage = %d %v", status, body)
+		t.Fatalf("health = %d %v, want 200 ok", status, body)
 	}
 
-	app.redis.Close() // Redis «упал»
+	app.redis.Close() // Redis «упал»: очередь недоступна, значит и сервис
+	status, body := app.do(t, http.MethodGet, "/health", "")
+	if status != http.StatusServiceUnavailable || body["detail"] != "Storage is unavailable" {
+		t.Errorf("health with Redis down = %d %v, want 503", status, body)
+	}
+}
+
+func TestPostgresUnavailable(t *testing.T) {
+	// Пул к закрытому порту — «Postgres упал».
+	pool, err := postgres.NewPool("postgres://app:app@127.0.0.1:1/x?sslmode=disable&connect_timeout=1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+	app := newTestAppWithDB(t, pool, pool) // *pgxpool.Pool — и TxBeginner, и Pinger
 	want := map[string]any{"detail": "Storage is unavailable"}
 
 	for _, req := range []struct{ method, path, body string }{
