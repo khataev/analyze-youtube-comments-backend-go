@@ -18,6 +18,7 @@ func TestParseDefaults(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := Config{
+		Database:           Database{DatabaseURL: "postgres://app:app@localhost:5432/analysis_go?sslmode=disable"},
 		RedisURL:           "redis://localhost:6379/0",
 		CORSOrigins:        StringList{"http://localhost:5173"},
 		LogLevel:           LogLevel(slog.LevelInfo),
@@ -75,6 +76,7 @@ func TestParseErrors(t *testing.T) {
 		{"bad model", []string{"YOUTUBE_API_KEY=k", "LLM_MODEL=gpt-4o"}, "provider:model"},
 		{"bad redis url", []string{"YOUTUBE_API_KEY=k", "REDIS_URL=http://x"}, "REDIS_URL"},
 		{"bad log level", []string{"YOUTUBE_API_KEY=k", "LOG_LEVEL=LOUD"}, "LOG_LEVEL"},
+		{"bad database url", []string{"YOUTUBE_API_KEY=k", "DATABASE_URL=postgres://h:port/db"}, "DATABASE_URL"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -83,6 +85,24 @@ func TestParseErrors(t *testing.T) {
 				t.Fatalf("Parse error = %v, want it to mention %q", err, tt.wantErr)
 			}
 		})
+	}
+}
+
+// Командам БД (cmd/migrate) ключи YouTube и LLM не нужны.
+func TestParseDatabaseNeedsNoAPIKeys(t *testing.T) {
+	db, err := ParseDatabase([]string{"DATABASE_URL=postgres://u:p@db:5432/x"})
+	if err != nil {
+		t.Fatalf("ParseDatabase without API keys: %v", err)
+	}
+	if db.DatabaseURL != "postgres://u:p@db:5432/x" {
+		t.Errorf("DatabaseURL = %q", db.DatabaseURL)
+	}
+}
+
+func TestInvalidDatabaseURLDoesNotLeakPassword(t *testing.T) {
+	_, err := ParseDatabase([]string{"DATABASE_URL=postgres://app:hunter2@db:port/x"})
+	if err == nil || !strings.Contains(err.Error(), "DATABASE_URL") || strings.Contains(err.Error(), "hunter2") {
+		t.Errorf("error = %v; want it to name DATABASE_URL and hide the password", err)
 	}
 }
 
@@ -100,6 +120,7 @@ func TestRedactURL(t *testing.T) {
 		"redis://localhost:6379/0":          "redis://localhost:6379/0",
 		"redis://:hunter2@redis:6379/0":     "redis://:xxxxx@redis:6379/0",
 		"redis://user:hunter2@redis:6379/0": "redis://user:xxxxx@redis:6379/0",
+		"postgres://app:app@pg:5432/db":     "postgres://app:xxxxx@pg:5432/db",
 	}
 	for in, want := range tests {
 		if got := RedactURL(in); got != want {

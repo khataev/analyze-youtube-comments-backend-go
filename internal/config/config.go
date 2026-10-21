@@ -18,12 +18,29 @@ import (
 	"time"
 
 	"github.com/caarlos0/env/v11"
+	"github.com/jackc/pgx/v5"
 	"github.com/joho/godotenv"
 	"github.com/redis/go-redis/v9"
 )
 
-// Config — вся конфигурация. Имена переменных совпадают с Python-версией.
+// Database — только подключение к БД. Этого хватает командам создания базы и миграций
+// (cmd/migrate): ключи YouTube и LLM им не нужны и не должны требоваться.
+type Database struct {
+	// Формат libpq URL, который понимают pgx, psql и goose:
+	// postgres://user:password@host:5432/dbname?sslmode=disable.
+	// sslmode=disable — общий Postgres в Docker без TLS; без него pgx (по умолчанию prefer)
+	// сначала пробует TLS, и в ошибках подключения появляются лишние строки «tls error».
+	DatabaseURL string `env:"DATABASE_URL" envDefault:"postgres://app:app@localhost:5432/analysis_go?sslmode=disable"`
+}
+
+// Config — вся конфигурация api и воркера. Имена переменных совпадают с Python-версией.
+//
+// Database встроена (embedding): её поля доступны как cfg.DatabaseURL, а env-библиотека
+// разбирает их вместе с остальными. Это композиция, а не наследование, как
+// `class Settings(DatabaseSettings)` в Python, но эффект для чтения тот же.
 type Config struct {
+	Database
+
 	RedisURL    string     `env:"REDIS_URL"    envDefault:"redis://localhost:6379/0"`
 	CORSOrigins StringList `env:"CORS_ORIGINS" envDefault:"[\"http://localhost:5173\"]"`
 	LogLevel    LogLevel   `env:"LOG_LEVEL"    envDefault:"INFO"`
@@ -50,22 +67,40 @@ func (c Config) TaskTTL() time.Duration {
 // Load ищет и подгружает .env (если он есть), затем читает окружение и валидирует.
 // Переменные окружения процесса имеют приоритет над .env, как в pydantic-settings.
 func Load() (Config, error) {
-	if path, ok := findDotEnv(); ok {
-		if err := godotenv.Load(path); err != nil {
-			return Config{}, fmt.Errorf("load %s: %w", path, err)
-		}
+	if err := loadDotEnv(); err != nil {
+		return Config{}, err
 	}
 	return Parse(os.Environ())
+}
+
+// LoadDatabase — как Load, но читает только Database.
+func LoadDatabase() (Database, error) {
+	if err := loadDotEnv(); err != nil {
+		return Database{}, err
+	}
+	return ParseDatabase(os.Environ())
+}
+
+// ParseDatabase читает Database из списка "KEY=VALUE".
+func ParseDatabase(environ []string) (Database, error) {
+	db, err := parseEnv[Database](environ)
+	if err != nil {
+		return Database{}, err
+	}
+	if err := db.validate(); err != nil {
+		return Database{}, fmt.Errorf("config: %w", err)
+	}
+	return db, nil
 }
 
 // Parse читает конфигурацию из списка "KEY=VALUE". Отдельно от Load, чтобы тесты
 // не трогали окружение процесса.
 func Parse(environ []string) (Config, error) {
-	vars := env.ToMap(environ)
-	var cfg Config
-	if err := env.ParseWithOptions(&cfg, env.Options{Environment: vars}); err != nil {
-		return Config{}, fmt.Errorf("config: %w", humanizeEnvError(err))
+	cfg, err := parseEnv[Config](environ)
+	if err != nil {
+		return Config{}, err
 	}
+	vars := env.ToMap(environ)
 	cfg.LLMKeySource = "LLM_API_KEY"
 	if cfg.LLMAPIKey == "" {
 		cfg.LLMKeySource = providerKeyVar(cfg.LLMModel)
@@ -77,9 +112,35 @@ func Parse(environ []string) (Config, error) {
 	return cfg, nil
 }
 
+func loadDotEnv() error {
+	if path, ok := findDotEnv(); ok {
+		if err := godotenv.Load(path); err != nil {
+			return fmt.Errorf("load %s: %w", path, err)
+		}
+	}
+	return nil
+}
+
+// parseEnv — общая часть Parse и ParseDatabase. Generic-функция (Go 1.18+):
+// T — любая структура с env-тегами.
+func parseEnv[T any](environ []string) (T, error) {
+	var cfg T
+	if err := env.ParseWithOptions(&cfg, env.Options{Environment: env.ToMap(environ)}); err != nil {
+		return cfg, fmt.Errorf("config: %w", humanizeEnvError[T](err))
+	}
+	return cfg, nil
+}
+
+func (d Database) validate() error {
+	if _, err := pgx.ParseConfig(d.DatabaseURL); err != nil {
+		return fmt.Errorf("DATABASE_URL: %w", err) // pgx сам маскирует пароль в тексте ошибки
+	}
+	return nil
+}
+
 func (c Config) validate() error {
 	// errors.Join собирает все ошибки сразу: пользователь видит весь список, а не первую.
-	var errs []error
+	errs := []error{c.Database.validate()} // nil в списке errors.Join пропускает
 	if _, err := redis.ParseURL(c.RedisURL); err != nil {
 		errs = append(errs, fmt.Errorf("REDIS_URL: %w", err))
 	}
@@ -100,7 +161,7 @@ func (c Config) validate() error {
 
 // humanizeEnvError заменяет имена полей структуры (LLMBatchSize) на имена
 // переменных окружения (LLM_BATCH_SIZE): пользователь правит .env, а не Go-код.
-func humanizeEnvError(err error) error {
+func humanizeEnvError[T any](err error) error {
 	var agg env.AggregateError
 	if !errors.As(err, &agg) {
 		return err
@@ -109,7 +170,7 @@ func humanizeEnvError(err error) error {
 	for _, e := range agg.Errors {
 		var parseErr env.ParseError
 		if errors.As(e, &parseErr) {
-			if field, ok := reflect.TypeFor[Config]().FieldByName(parseErr.Name); ok {
+			if field, ok := reflect.TypeFor[T]().FieldByName(parseErr.Name); ok {
 				name, _, _ := strings.Cut(field.Tag.Get("env"), ",")
 				e = fmt.Errorf("%s: %w", name, parseErr.Err)
 			}

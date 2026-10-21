@@ -1,16 +1,33 @@
 # Основные команды. `make help` — список.
 .DEFAULT_GOAL := help
 
-.PHONY: help run-api run-worker build test test-cover lint fmt tidy docker-up docker-down
+.PHONY: help run-api run-worker build test test-cover lint fmt tidy docker-up docker-down \
+	db-prepare db-create db-migrate db-rollback db-status
 
 help: ## Показать список команд
-	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-12s %s\n", $$1, $$2}'
+	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-13s %s\n", $$1, $$2}'
 
 run-api: ## Запустить API локально (нужен Redis)
 	go run ./cmd/api
 
 run-worker: ## Запустить воркер локально (нужен Redis)
 	go run ./cmd/worker
+
+# Аналоги rails db:*. Читают только DATABASE_URL из окружения или .env.
+db-prepare: ## Создать базу, если её нет, и применить миграции (rails db:prepare)
+	go run ./cmd/migrate prepare
+
+db-create: ## Создать базу, если её нет (rails db:create)
+	go run ./cmd/migrate create
+
+db-migrate: ## Применить новые миграции (rails db:migrate)
+	go run ./cmd/migrate up
+
+db-rollback: ## Откатить последнюю миграцию (rails db:rollback)
+	go run ./cmd/migrate down
+
+db-status: ## Состояние миграций (rails db:migrate:status)
+	go run ./cmd/migrate status
 
 build: ## Собрать бинарники в bin/
 	go build -o bin/ ./cmd/...
